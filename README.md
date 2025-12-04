@@ -5,22 +5,44 @@
 HR-Mel is a 3-band Mel front-end that keeps Mel spacing but adds resolution in the highs. This repo ships a minimal pipeline to extract HR-Mel at fixed 44.1 kHz settings and to compare it against STFT / Mel / Log-Mel in terms of relative reconstruction error and compressed size.
 
 ## Specs
-- Input: `playlist.mp3` (forced mono, `sr=44,100`)
+- Input: `playlist.mp3` (forced mono, default `sr=44,100`)
 - STFT: `n_fft=2048`, `hop_length=441` (≈10 ms), `win_length=2048`
 - Mel upper bound: `fmax=20,000 Hz`
 - HR-Mel bands: `0–1.5 kHz` 40 bins log1p / `1.5–6 kHz` 32 bins log1p / `6–20 kHz` 24 bins sqrt(log1p) → total 96 bins
 
+### Motivation
+- Standard log-mel for music often drops high-band detail. HR-Mel aims to cut STFT reconstruction error while keeping dimensionality small (96 bins).
+- Fits 44.1 kHz music front-ends (neural audio codecs, music LMs) where “air/attack” retention matters.
+
+### Limitations
+- Defaults are fixed for 44.1 kHz (`n_fft=2048`, `hop=441`, `win=2048`). Other configs are untested.
+- HR-Mel high band is capped by `fmax` (clipped to Nyquist). Use matching params between extraction and analysis.
+
 ## Usage
 ```bash
 cd HR-mel
-NUMBA_CACHE_DIR=/tmp python3 generate_mel_variants.py      # extract HR-Mel
-NUMBA_CACHE_DIR=/tmp python3 analyze_features.py           # compare STFT/Mel/Log-Mel/HR-Mel
+NUMBA_CACHE_DIR=/tmp python3 generate_mel_variants.py \
+  --input playlist.mp3 --output-dir output --sr 44100 --fmax 20000
+
+NUMBA_CACHE_DIR=/tmp python3 analyze_features.py \
+  --input playlist.mp3 --output-dir output --sr 44100 --fmax 20000
+```
+
+Python API (minimal):
+```python
+from generate_mel_variants import hr_mel
+encoded, meta = hr_mel(y, sr=44_100)  # y: mono waveform
 ```
 
 ## Outputs
 - `output/hr_mel.npz` : HR-Mel encoding + metadata
 - `output/summary.json` : input/shape/FFT params
 - `output/analysis.json` : relative reconstruction error vs STFT (Frobenius), bins/frames, compressed sizes
+
+`analysis.json` schema (top-level):
+- `input_sr`, `duration_sec`, `frames`, `n_fft`, `hop_length`, `win_length`, `fmax`
+- `representations`:
+  - `bins`, `frames`, `relative_recon_error`, `bytes_compressed`, `note`
 
 ## Results (on `playlist.mp3`)
 Baseline vs 80-bin Mel

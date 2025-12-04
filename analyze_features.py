@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Compare STFT, Mel, Log-Mel, and HR-Mel representations on playlist.mp3."""
+"""Compare STFT, Mel, Log-Mel, and HR-Mel representations on an input file."""
 
+import argparse
 import io
 import json
 import os
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import numpy as np
 
@@ -14,16 +15,13 @@ os.environ.setdefault("NUMBA_CACHE_DIR", str(Path(".numba_cache").resolve()))
 import librosa  # noqa: E402  # isort:skip
 
 from generate_mel_variants import (
-    FMAX,
+    DEFAULT_FMAX,
+    DEFAULT_SR,
     HOP_LENGTH,
     N_FFT,
-    SR_TARGET,
     WIN_LENGTH,
     build_hr_mel_basis,
 )
-
-INPUT_PATH = Path("playlist.mp3")
-OUT_DIR = Path("output")
 
 
 def rel_error(target: np.ndarray, approx: np.ndarray) -> float:
@@ -46,9 +44,28 @@ def compressed_size_bytes(**arrays: np.ndarray) -> int:
     return len(buf.getvalue())
 
 
-def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    y, sr = librosa.load(INPUT_PATH, sr=SR_TARGET, mono=True)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Analyze STFT/Mel/HR-Mel representations.")
+    parser.add_argument("--input", type=Path, default=Path("playlist.mp3"), help="Input audio file")
+    parser.add_argument("--output-dir", type=Path, default=Path("output"), help="Directory for analysis output")
+    parser.add_argument("--sr", type=int, default=DEFAULT_SR, help="Target sample rate (Hz)")
+    parser.add_argument(
+        "--fmax", type=float, default=DEFAULT_FMAX, help="Upper frequency for Mel filters (Hz, clipped to Nyquist)"
+    )
+    return parser.parse_args()
+
+
+def main(args: argparse.Namespace) -> None:
+    input_path: Path = args.input
+    out_dir: Path = args.output_dir
+    target_sr = args.sr
+    fmax = min(args.fmax, target_sr / 2.0)
+
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    y, sr = librosa.load(input_path, sr=target_sr, mono=True)
 
     stft_power = np.abs(
         librosa.stft(y=y, n_fft=N_FFT, hop_length=HOP_LENGTH, win_length=WIN_LENGTH)
@@ -67,7 +84,7 @@ def main() -> None:
 
     # Standard Mel (power)
     mel_basis = librosa.filters.mel(
-        sr=sr, n_fft=N_FFT, n_mels=80, fmax=FMAX, norm="slaney"
+        sr=sr, n_fft=N_FFT, n_mels=80, fmax=fmax, norm="slaney"
     )
     mel_power = mel_basis @ stft_power
     mel_pinv = np.linalg.pinv(mel_basis)
@@ -94,7 +111,7 @@ def main() -> None:
 
     # Uniform Mel with same bin count as HR (96 bins)
     mel96_basis = librosa.filters.mel(
-        sr=sr, n_fft=N_FFT, n_mels=96, fmax=FMAX, norm="slaney"
+        sr=sr, n_fft=N_FFT, n_mels=96, fmax=fmax, norm="slaney"
     )
     mel96_power = mel96_basis @ stft_power
     mel96_pinv = np.linalg.pinv(mel96_basis)
@@ -117,13 +134,14 @@ def main() -> None:
     }
 
     # HR-Mel
-    hr_basis, hr_slices = build_hr_mel_basis(sr, N_FFT)
+    hr_basis, hr_slices = build_hr_mel_basis(sr, N_FFT, fmax)
     hr_mel_power = hr_basis @ stft_power
     hr_encoded = hr_mel_power.copy()
     hr_encoded[hr_slices[0]] = np.log1p(hr_encoded[hr_slices[0]])
     hr_encoded[hr_slices[1]] = np.log1p(hr_encoded[hr_slices[1]])
     hr_encoded[hr_slices[2]] = np.sqrt(np.log1p(hr_encoded[hr_slices[2]]))
     hr_decoded = decode_hr(hr_encoded, hr_slices)
+    # Default rcond works well for these bases; tune rcond if experimenting with other configs.
     hr_pinv = np.linalg.pinv(hr_basis)
     hr_recon = np.maximum(hr_pinv @ hr_decoded, 0)
     results["hr_mel"] = {
@@ -141,13 +159,13 @@ def main() -> None:
         "n_fft": N_FFT,
         "hop_length": HOP_LENGTH,
         "win_length": WIN_LENGTH,
-        "fmax": FMAX,
+        "fmax": fmax,
         "representations": results,
     }
 
-    (OUT_DIR / "analysis.json").write_text(json.dumps(summary, indent=2))
+    (out_dir / "analysis.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":
-    main()
+    main(parse_args())

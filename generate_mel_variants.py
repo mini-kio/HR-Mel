@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
+"""Extract HR-Mel (40/32/24 bins with sqrt-log in the top band) from an input file.
 
+Defaults follow the 44.1 kHz spec in README, but you can override input/output/sr/fmax.
+"""
+
+import argparse
 import json
 import os
 from pathlib import Path
@@ -12,33 +17,32 @@ os.environ.setdefault("NUMBA_CACHE_DIR", str(Path(".numba_cache").resolve()))
 
 import librosa  # noqa: E402  # isort:skip
 
-INPUT_PATH = Path("playlist.mp3")
-OUT_DIR = Path("output")
-
-SR_TARGET = 44_100
+# Default configuration (can be overridden via CLI).
+DEFAULT_SR = 44_100
 N_FFT = 2048
 HOP_LENGTH = 441
 WIN_LENGTH = 2048
-FMAX = 20_000.0
+DEFAULT_FMAX = 20_000.0
 
 
-def ensure_out_dir() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+def ensure_out_dir(out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
 
 
-def build_hr_mel_basis(sr: int, n_fft: int) -> Tuple[np.ndarray, List[slice]]:
+def build_hr_mel_basis(sr: int, n_fft: int, fmax: float) -> Tuple[np.ndarray, List[slice]]:
     """Create custom mel basis for HR-Mel."""
+    high_band_end = fmax
     bands = [
         (0.0, 1_500.0, 40),
         (1_500.0, 6_000.0, 32),
-        (6_000.0, 20_000.0, 24),
+        (6_000.0, high_band_end, 24),
     ]
     bases = []
     slices = []
     start = 0
-    for fmin, fmax, bins in bands:
+    for fmin, fmax_band, bins in bands:
         basis = librosa.filters.mel(
-            sr=sr, n_fft=n_fft, n_mels=bins, fmin=fmin, fmax=fmax, norm="slaney"
+            sr=sr, n_fft=n_fft, n_mels=bins, fmin=fmin, fmax=fmax_band, norm="slaney"
         )
         bases.append(basis)
         end = start + bins
@@ -47,11 +51,11 @@ def build_hr_mel_basis(sr: int, n_fft: int) -> Tuple[np.ndarray, List[slice]]:
     return np.vstack(bases), slices
 
 
-def hr_mel(y: np.ndarray, sr: int) -> Tuple[np.ndarray, Dict]:
+def hr_mel(y: np.ndarray, sr: int, fmax: float = DEFAULT_FMAX) -> Tuple[np.ndarray, Dict]:
     power_spec = np.abs(
         librosa.stft(y=y, n_fft=N_FFT, hop_length=HOP_LENGTH, win_length=WIN_LENGTH)
     ) ** 2
-    basis, bands = build_hr_mel_basis(sr, N_FFT)
+    basis, bands = build_hr_mel_basis(sr, N_FFT, fmax)
     mel = basis @ power_spec
 
     encoded = mel.copy()
@@ -69,22 +73,43 @@ def hr_mel(y: np.ndarray, sr: int) -> Tuple[np.ndarray, Dict]:
         "bands": [
             {"range_hz": [0, 1500], "bins": 40, "compression": "log1p"},
             {"range_hz": [1500, 6000], "bins": 32, "compression": "log1p"},
-            {"range_hz": [6000, 20000], "bins": 24, "compression": "sqrt(log1p)"},
+            {"range_hz": [6000, float(fmax)], "bins": 24, "compression": "sqrt(log1p)"},
         ],
         "sr": sr,
-        "fmax": FMAX,
+        "fmax": float(fmax),
     }
     return encoded, meta
 
 
-def main() -> None:
-    ensure_out_dir()
-    y, sr = librosa.load(INPUT_PATH, sr=SR_TARGET, mono=True)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Extract HR-Mel features.")
+    parser.add_argument("--input", type=Path, default=Path("playlist.mp3"), help="Input audio file")
+    parser.add_argument("--output-dir", type=Path, default=Path("output"), help="Directory for outputs")
+    parser.add_argument("--sr", type=int, default=DEFAULT_SR, help="Target sample rate (Hz)")
+    parser.add_argument(
+        "--fmax",
+        type=float,
+        default=DEFAULT_FMAX,
+        help="Upper frequency for Mel filters (Hz, clipped to Nyquist)",
+    )
+    return parser.parse_args()
 
-    # High-Resolution Log-Mel
-    hr_encoded, hr_meta = hr_mel(y, sr)
+
+def main(args: argparse.Namespace) -> None:
+    input_path: Path = args.input
+    out_dir: Path = args.output_dir
+    target_sr = args.sr
+
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+
+    fmax = min(args.fmax, target_sr / 2.0)
+    ensure_out_dir(out_dir)
+    y, sr = librosa.load(input_path, sr=target_sr, mono=True)
+
+    hr_encoded, hr_meta = hr_mel(y, sr, fmax=fmax)
     np.savez_compressed(
-        OUT_DIR / "hr_mel.npz", encoded=hr_encoded, meta=json.dumps(hr_meta)
+        out_dir / "hr_mel.npz", encoded=hr_encoded, meta=json.dumps(hr_meta)
     )
     summary = {
         "input_sr": sr,
@@ -94,11 +119,11 @@ def main() -> None:
         "n_fft": N_FFT,
         "hop_length": HOP_LENGTH,
         "win_length": WIN_LENGTH,
-        "fmax": FMAX,
+        "fmax": fmax,
     }
-    (OUT_DIR / "summary.json").write_text(json.dumps(summary, indent=2))
+    (out_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2))
 
 
 if __name__ == "__main__":
-    main()
+    main(parse_args())

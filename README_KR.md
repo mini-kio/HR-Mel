@@ -5,22 +5,43 @@
 HR-Mel은 멜 분포는 유지하면서 고역을 더 촘촘히 보는 3밴드 멜 표현입니다. 44.1 kHz 고정 파라미터로 HR-Mel을 추출하고, STFT / Mel / Log-Mel 대비 상대 복원 오차를 계산하는 최소 코드를 포함합니다.
 
 ## 스펙
-- 입력: `playlist.mp3` (mono 강제, `sr=44,100`)
+- 입력: `playlist.mp3` (mono 강제, 기본 `sr=44,100`)
 - STFT: `n_fft=2048`, `hop_length=441`(≈10 ms), `win_length=2048`
 - 멜 상한: `fmax=20,000 Hz`
 - HR-Mel 밴드: `0–1.5 kHz` 40 bin log1p / `1.5–6 kHz` 32 bin log1p / `6–20 kHz` 24 bin sqrt(log1p) → 총 96 bin
 
+### Motivation (왜 이걸 쓰나)
+- 기본 log-mel은 고역 정보가 쉽게 사라진다. HR-Mel은 차원을 크게 늘리지 않으면서 고역 해상도를 높여 STFT 복원 오차를 줄이는 것을 목표로 한다.
+- 44.1 kHz 음악 데이터의 front-end(오디오 코덱, music LM 등)로 사용할 때 어택/에어 손실을 줄이는 용도.
+
+### Limitations (제한)
+- 기본값은 44.1 kHz 고정(`n_fft=2048`, `hop=441`, `win=2048`)이며 다른 세팅은 검증되지 않았다.
+- `fmax`는 나이퀴스트로 클리핑된다. 추출/분석 시 동일 파라미터를 맞추는 것을 권장.
+
 ## 실행
 ```bash
 cd HR-mel
-NUMBA_CACHE_DIR=/tmp python3 generate_mel_variants.py      # HR-Mel 생성
-NUMBA_CACHE_DIR=/tmp python3 analyze_features.py           # STFT/Mel/Log-Mel/HR-Mel 비교
+NUMBA_CACHE_DIR=/tmp python3 generate_mel_variants.py \
+  --input playlist.mp3 --output-dir output --sr 44100 --fmax 20000
+
+NUMBA_CACHE_DIR=/tmp python3 analyze_features.py \
+  --input playlist.mp3 --output-dir output --sr 44100 --fmax 20000
+```
+
+Python API 예시:
+```python
+from generate_mel_variants import hr_mel
+encoded, meta = hr_mel(y, sr=44_100)  # y: mono waveform
 ```
 
 ## 출력물
 - `output/hr_mel.npz` : HR-Mel 인코딩 + 메타데이터
 - `output/summary.json` : 입력/형상/FFT 파라미터 요약
 - `output/analysis.json` : STFT 대비 상대 복원 오차 (Frobenius), 표현별 bin/프레임
+
+`analysis.json` 구조:
+- 최상단: `input_sr`, `duration_sec`, `frames`, `n_fft`, `hop_length`, `win_length`, `fmax`
+- `representations`: 각 표현별 `bins`, `frames`, `relative_recon_error`, `bytes_compressed`, `note`
 
 ## 비교 결과 (`playlist.mp3` 기준)
 기본 비교 (80-bin 멜 대비)
