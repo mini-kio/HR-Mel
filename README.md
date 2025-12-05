@@ -2,7 +2,7 @@
 
 [Korean README](README_KR.md) · [License](LICENSE)
 
-HR-Mel is a 3-band Mel front-end that keeps Mel spacing but adds resolution in the highs. This repo ships a minimal pipeline to extract HR-Mel at fixed 44.1 kHz settings and to compare it against STFT / Mel / Log-Mel in terms of relative reconstruction error and compressed size.
+HR-Mel is a 3-band Mel front-end that reallocates capacity toward low frequencies while preserving high-band detail. This repo ships a minimal pipeline to extract HR-Mel at fixed 44.1 kHz settings and to compare it against STFT / Mel / Log-Mel in terms of relative reconstruction error and compressed size.
 
 ## Specs
 - Input: `playlist.mp3` (forced mono, default `sr=44,100`)
@@ -27,7 +27,7 @@ HR-Mel is a 3-band Mel front-end that keeps Mel spacing but adds resolution in t
 
 ## Usage
 ```bash
-cd HR-mel
+cd HR-Mel
 NUMBA_CACHE_DIR=/tmp python -m src.generate_mel_variants \
   --input playlist.mp3 --output-dir output --sr 44100 --fmax 20000
 
@@ -68,7 +68,7 @@ encoded, meta = hr_mel(y, sr=44_100)  # y: mono waveform
 **40/32/24 Configuration (Original, Recommended)**
 | Band | Mel-96 Error | HR-Mel Error | Delta | Improvement |
 | --- | --- | --- | --- | --- |
-| Low (<1.5 kHz) | 0.3737 ± 0.0391 | **0.2729 ± 0.0345** | +0.1008 | **~26.7%** |
+| Low (<1.5 kHz) | 0.3737 ± 0.0391 | **0.2729 ± 0.0345** | +0.1008 | **~27.0%** |
 | Mid (1.5–6 kHz) | 0.6701 ± 0.0372 | 0.6780 ± 0.0419 | -0.0079 | -1.2% |
 | High (>6 kHz) | 0.7186 ± 0.0548 | 0.7372 ± 0.0557 | -0.0186 | -2.6% |
 

@@ -13,8 +13,8 @@ os.environ.setdefault("NUMBA_CACHE_DIR", str(Path(".numba_cache").resolve()))
 
 import librosa  # noqa: E402  # isort:skip
 
-from utils.analysis_utils import compressed_size_bytes, mean_std, rel_error
-from hr_mel import (
+from src.utils.analysis_utils import compressed_size_bytes, mean_std, rel_error
+from src.hr_mel import (
     DEFAULT_BANDS,
     DEFAULT_FMAX,
     DEFAULT_SR,
@@ -25,7 +25,7 @@ from hr_mel import (
     decode_hr,
     encode_hr,
 )
-from utils.mel_utils import log_compress, log_decompress, mel_power
+from src.utils.mel_utils import log_compress, log_decompress, mel_power
 
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac"}
 

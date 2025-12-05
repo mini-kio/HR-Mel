@@ -14,7 +14,7 @@ os.environ.setdefault("NUMBA_CACHE_DIR", str(Path(".numba_cache").resolve()))
 
 import librosa  # noqa: E402  # isort:skip
 
-from hr_mel import (
+from src.hr_mel import (
     DEFAULT_BANDS,
     DEFAULT_FMAX,
     DEFAULT_SR,
