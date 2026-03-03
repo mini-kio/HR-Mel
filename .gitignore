@@ -2,3 +2,18 @@ __pycache__/
 *.pyc
 output/
 playlist.mp3
+
+# Data & audio (GTZAN etc.) — too large for git
+Data/
+*.wav
+*.mp3
+*.flac
+*.ogg
+
+# Experiment results (regenerable via scripts)
+research/paradigm_v1/results/
+research/gtzan_validation/results/
+
+# IDE / tool
+.claude/
+.numba_cache/

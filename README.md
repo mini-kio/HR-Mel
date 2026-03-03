@@ -1,112 +1,118 @@
 # HR-Mel (44.1 kHz)
 
-[Korean README](README_KR.md) · [License](LICENSE)
+[Korean README](README_KR.md) · [Paper (Zenodo)](https://zenodo.org/records/18831533) · [License](LICENSE)
 
-HR-Mel is a 3-band Mel front-end that reallocates capacity toward low frequencies while preserving high-band detail. This repo ships a minimal pipeline to extract HR-Mel at fixed 44.1 kHz settings and to compare it against STFT / Mel / Log-Mel in terms of relative reconstruction error and compressed size.
+HR-Mel is a fixed 3-band Mel front-end for 44.1 kHz music that reallocates capacity toward low frequencies with band-specific nonlinearities. Validated on the GTZAN benchmark (999 tracks, 10 genres), achieving **53.8% lower reconstruction error** than standard 96-bin log-mel at matched dimensionality.
 
-## Specs
-- Input: `playlist.mp3` (forced mono, default `sr=44,100`)
-- STFT: `n_fft=2048`, `hop_length=441` (≈10 ms), `win_length=2048`
-- Mel upper bound: `fmax=20,000 Hz`
-- HR-Mel bands: `0–1.5 kHz` 40 bins log1p / `1.5–6 kHz` 32 bins log1p / `6–20 kHz` 24 bins sqrt(log1p) → total 96 bins
+## Configs
 
-### Motivation
-- Standard log-mel for music often drops high-band detail. HR-Mel aims to cut STFT reconstruction error while keeping dimensionality small (96 bins).
-- Fits 44.1 kHz music front-ends (neural audio codecs, music LMs) where “air/attack” retention matters.
+| Config | Bands | Bins | Use case |
+|---|---|---|---|
+| **v1** (original) | 0–1.5k / 1.5–6k / 6–20k | 40/32/24 | Initial design |
+| **v2** (optimized) | 0–1.2k / 1.2–5k / 5–20k | 48/32/16 | Best from design-space search |
 
-### Limitations
-- Defaults are fixed for 44.1 kHz (`n_fft=2048`, `hop=441`, `win=2048`). Other configs are untested.
-- HR-Mel high band is capped by `fmax` (clipped to Nyquist). Use matching params between extraction and analysis.
+- STFT: `n_fft=2048`, `hop_length=441` (~10 ms), `win_length=2048`
+- Compression: log1p (low/mid), sqrt(log1p) (high)
+- Total: 96 bins
 
-## Dataset
-- **File count**: 12 tracks
-- **Duration**: Average ~2–3 minutes per track
-- **Source**: Personal collection, various styles (vocal/instrumental mix)
-- **Sample rate**: 44.1 kHz
-- **Format**: WAV or MP3
+## Results
+
+### Overall Performance
+
+| Representation | Bins | 12-track (private) | GTZAN (999 tracks) |
+|---|---|---|---|
+| Mel-80 | 80 | 0.4438 ± 0.040 | 0.4514 ± 0.058 |
+| Mel-96 / Log-Mel-96 | 96 | 0.3810 ± 0.040 | 0.3747 ± 0.059 |
+| HR-Mel v1 (40/32/24) | 96 | 0.2845 ± 0.041 | 0.3025 ± 0.056 |
+| **HR-Mel v2 (48/32/16)** | **96** | **0.2041 ± 0.041** | **0.1730 ± 0.077** |
+
+### Rate-Distortion (GTZAN, scalar quantization)
+
+| Bits | Log-Mel-96 | HR-Mel v2 |
+|---|---|---|
+| 4 | 0.4026 | **0.2532** |
+| 6 | 0.3764 | **0.1790** |
+| 8 | 0.3748 | **0.1733** |
+
+### Per-Genre (GTZAN, HR-Mel v2 vs Mel-96)
+
+| Genre | Mel-96 | HR-Mel v2 | Improvement |
+|---|---|---|---|
+| blues | 0.3807 | 0.1902 | +50.1% |
+| classical | 0.4110 | 0.2150 | +47.7% |
+| country | 0.3848 | 0.1793 | +53.4% |
+| disco | 0.3278 | 0.1659 | +49.4% |
+| hiphop | 0.3608 | 0.1239 | +65.7% |
+| jazz | 0.4173 | 0.2019 | +51.6% |
+| metal | 0.3589 | 0.1656 | +53.9% |
+| pop | 0.3634 | 0.1470 | +59.5% |
+| reggae | 0.3690 | 0.1547 | +58.1% |
+| rock | 0.3741 | 0.1863 | +50.2% |
+
+### Genre Classification (SVM, 3-fold CV)
+
+| Features | Accuracy |
+|---|---|
+| Log-Mel-96 | 0.647 ± 0.010 |
+| **HR-Mel v2** | **0.660 ± 0.029** |
+
+### Band-Wise (GTZAN, HR-Mel v2)
+
+| Band | Mel-96 | HR-Mel v2 | Improvement |
+|---|---|---|---|
+| Low (<1.2 kHz) | 0.3645 | **0.1227** | **+66.3%** |
+| Mid (1.2–5 kHz) | 0.6209 | 0.6133 | +1.2% |
+| High (>5 kHz) | 0.7254 | 0.7936 | -9.4% |
 
 ## Usage
-```bash
-cd HR-Mel
-NUMBA_CACHE_DIR=/tmp python -m src.generate_mel_variants \
-  --input playlist.mp3 --output-dir output --sr 44100 --fmax 20000
 
-NUMBA_CACHE_DIR=/tmp python -m src.analyze_features \
-  --input playlist.mp3 --output-dir output --sr 44100 --fmax 20000
+```bash
+# Basic analysis (single file or directory)
+python -m src.analyze_features --input <audio_file_or_dir> --output-dir output
+
+# HR-Mel extraction
+python -m src.generate_mel_variants --input <audio_file> --output-dir output
 ```
 
-Python API (minimal):
 ```python
 from src.hr_mel import hr_mel
 encoded, meta = hr_mel(y, sr=44_100)  # y: mono waveform
 ```
 
-## Outputs
-- `output/hr_mel.npz` : HR-Mel encoding + metadata
-- `output/summary.json` : input/shape/FFT params
-- `output/analysis.json` : relative reconstruction error vs STFT (Frobenius), bins/frames, compressed sizes
+## Research Scripts
 
-`analysis.json` schema (top-level):
-- `input_sr`, `duration_sec`, `frames`, `n_fft`, `hop_length`, `win_length`, `fmax`
-- `representations`:
-  - `bins`, `frames`, `relative_recon_error`, `bytes_compressed`, `note`
+```bash
+# Paradigm studies (design-space search, RD, multi-rate, psycho-allocator, adaptive)
+python research/paradigm_v1/run_research.py --input <audio_dir> --output-dir research/paradigm_v1/results
 
-## Results
-
-### Overall Performance (12 tracks, mean ± std)
-| Representation | Bins | Rel. Error ↓ | Notes |
-| --- | --- | --- | --- |
-| STFT | 1025 | 0.000 | reference |
-| Mel-80 | 80 | 0.4438 ± 0.0404 | 80-bin power Mel |
-| Log-Mel-80 | 80 | 0.4438 ± 0.0404 | log1p on 80-bin Mel |
-| Mel-96 | 96 | 0.3810 ± 0.0395 | 96-bin power Mel |
-| Log-Mel-96 | 96 | 0.3810 ± 0.0395 | log1p on 96-bin Mel |
-| **HR-Mel (40/32/24)** | 96 | **0.2845 ± 0.0410** | 40/32/24 bins with sqrt-log top band |
-
-### Band-wise Analysis (Frequency ranges: <1.5 kHz / 1.5–6 kHz / >6 kHz)
-
-**40/32/24 Configuration (Original, Recommended)**
-| Band | Mel-96 Error | HR-Mel Error | Delta | Improvement |
-| --- | --- | --- | --- | --- |
-| Low (<1.5 kHz) | 0.3737 ± 0.0391 | **0.2729 ± 0.0345** | +0.1008 | **~27.0%** |
-| Mid (1.5–6 kHz) | 0.6701 ± 0.0372 | 0.6780 ± 0.0419 | -0.0079 | -1.2% |
-| High (>6 kHz) | 0.7186 ± 0.0548 | 0.7372 ± 0.0557 | -0.0186 | -2.6% |
-
-**32/32/32 Configuration (Balanced bins)**
-| Band | Mel-96 Error | HR-Mel Error | Delta | Improvement |
-| --- | --- | --- | --- | --- |
-| Low (<1.5 kHz) | 0.3737 ± 0.0391 | 0.4007 ± 0.0394 | -0.0271 | -7.4% |
-| Mid (1.5–6 kHz) | 0.6701 ± 0.0372 | 0.6780 ± 0.0419 | -0.0079 | -1.2% |
-| High (>6 kHz) | 0.7186 ± 0.0548 | 0.7159 ± 0.0509 | +0.0027 | +0.3% |
-
-**24/32/40 Configuration (High-band focused)**
-| Band | Mel-96 Error | HR-Mel Error | Delta | Improvement |
-| --- | --- | --- | --- | --- |
-| Low (<1.5 kHz) | 0.3737 ± 0.0391 | 0.4840 ± 0.0381 | -0.1104 | -30.5% |
-| Mid (1.5–6 kHz) | 0.6701 ± 0.0372 | 0.6780 ± 0.0419 | -0.0079 | -1.2% |
-| High (>6 kHz) | 0.7186 ± 0.0548 | **0.6958 ± 0.0429** | +0.0228 | **+3.1%** |
-
-### Key Findings
-- **40/32/24 configuration** provides the best overall performance with significant low-band improvement (~27%)
-- HR-Mel gains are primarily in the low-frequency range (<1.5 kHz)
-- Mid and high bands show slight degradation compared to standard Mel-96
-- Balanced (32/32/32) or high-focused (24/32/40) configurations sacrifice low-band performance
-- To improve high-band performance while maintaining low-band gains, consider adjusting top-band compression or increasing fmax
-
-Errors are computed by projecting STFT power → representation → pseudo-inverse back to STFT power, then taking relative Frobenius norm.
+# GTZAN validation (requires GTZAN dataset in Data/genres_original/)
+python research/gtzan_validation/run_gtzan_validation.py --data-dir Data --output-dir research/gtzan_validation/results
+```
 
 ## Project Structure
+
 ```
 HR-Mel/
-├── src/                          # Source code
-│   ├── hr_mel.py                # Core HR-Mel implementation
-│   ├── generate_mel_variants.py # HR-Mel feature extractor
-│   ├── analyze_features.py      # STFT/Mel/HR-Mel comparison analysis
-│   └── utils/                   # Utility modules
-│       ├── mel_utils.py         # Mel processing utilities
-│       └── analysis_utils.py    # Analysis helper functions
-├── output/                      # Generated artifacts (analysis results, encodings)
-├── README.md                    # This file
-├── README_KR.md                 # Korean documentation
-└── LICENSE                      # Apache 2.0
+├── src/                                    # Core implementation
+│   ├── hr_mel.py                          # HR-Mel basis, encode/decode
+│   ├── generate_mel_variants.py           # Feature extraction CLI
+│   ├── analyze_features.py                # Representation comparison
+│   └── utils/
+│       ├── mel_utils.py                   # Mel helpers
+│       └── analysis_utils.py              # Error/size utilities
+├── research/
+│   ├── paradigm_v1/
+│   │   ├── run_research.py                # 6-study paradigm runner
+│   │   ├── hrmel_spec_prototype.py        # Profile-driven API prototype
+│   │   └── README.md
+│   └── gtzan_validation/
+│       └── run_gtzan_validation.py        # GTZAN benchmark test
+├── main.tex                               # Paper (LaTeX)
+├── README.md
+├── README_KR.md
+└── LICENSE                                # Apache 2.0
 ```
+
+## GTZAN Notes
+
+GTZAN is 22.05 kHz natively. The validation script upsamples to 44.1 kHz. Known fault file (jazz.00054.wav) is excluded per [Sturm 2013](https://arxiv.org/abs/1306.1461). Classification uses stratified random splits (not artist-filtered); relative comparisons remain valid.

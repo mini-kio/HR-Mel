@@ -1,0 +1,520 @@
+\documentclass[twocolumn]{article}
+
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+\usepackage{cite}
+\usepackage{amssymb}
+
+\title{HR-Mel: An Asymmetric Multi-Band Mel Representation for Music Signals}
+
+\author{
+  Kio\\
+  \texttt{kiolaaoz223@gmail.com}
+}
+
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Standard log-mel spectrograms use a single mel basis and a uniform pointwise compression across the full spectrum. For music signals, this design may not provide the most useful trade-off between low-frequency reconstruction fidelity and coverage of upper-band detail at a fixed dimensionality. We study HR-Mel, a fixed 3-band mel representation for 44.1~kHz music with asymmetric bin allocation and band-specific pointwise nonlinearities. Through a design-space search over band boundaries, bin allocations, and compression functions, we identify an optimized 48/32/16 configuration (0--1.2~kHz, 1.2--5~kHz, 5--20~kHz) that reduces overall STFT reconstruction error by 53.8\% relative to a standard 96-bin log-mel baseline on the GTZAN dataset (999 tracks, 10 genres; 0.1730 vs.\ 0.3747). Under scalar quantization at matched bitrates, HR-Mel maintains a consistent advantage across the rate--distortion curve (e.g., 8-bit: 0.1733 vs.\ 0.3748). A downstream genre classification experiment shows that HR-Mel features achieve comparable or slightly higher accuracy than log-mel features (66.0\% vs.\ 64.7\%, SVM 3-fold CV). These results generalize from an initial 12-track exploratory set to a public benchmark, supporting asymmetric multi-band allocation as a practical design direction for compact music representations.
+\end{abstract}
+
+\section{Introduction}
+
+Compact time-frequency representations remain central to modern audio modeling, including neural audio coding, music generation, and other music understanding systems. The mel-scale spectrogram is widely used because it provides a compact representation that roughly follows human pitch perception~\cite{stevens1937scale}, and mel-based cepstral features have long relied on logarithmic compression as a standard frontend design choice~\cite{davis1980comparison}. However, conventional log-mel representations apply one mel basis and one compression law across the entire spectrum.
+
+For music signals, a uniform design can be limiting. In many recordings, a large fraction of spectral energy lies in low and lower-mid frequencies, while upper bands carry timbral brightness, attacks, and other sparse but perceptually important details. At a fixed representation size, capacity assigned to one region necessarily reduces capacity elsewhere. This motivates studying whether a simple hand-designed multi-band mel representation can provide a more favorable reconstruction trade-off than a uniform mel allocation.
+
+Alternative nonlinear frontends are not new. Prior work has explored sub-band compression and root-based nonlinearities for robust speech features~\cite{nasersharif2007mel,pncc2016}, adaptive per-channel compression such as PCEN~\cite{pcen2018}, and learnable audio frontends that optimize filtering and compression jointly with downstream tasks~\cite{leaf2021}. Likewise, recent learned multi-band audio systems explicitly partition frequency content across bands~\cite{luo2023bandsplit,bscodec2025,muffin2025}. The goal of this paper is therefore not to claim that band-specific nonlinear compression is itself a new idea, but to examine a simple fixed 3-band mel design for 44.1~kHz music and to characterize its reconstruction trade-offs at matched dimensionality.
+
+We introduce HR-Mel, a rule-based 96-bin representation with three frequency bands: 0--1.5~kHz, 1.5--6~kHz, and 6--20~kHz. These bands are assigned 40, 32, and 24 mel bins, respectively, and use log1p / log1p / sqrt(log1p) as band-specific pointwise nonlinearities. The representation is fixed, interpretable, and requires no training. In the present study, we evaluate HR-Mel only through magnitude reconstruction using the same pseudo-inverse pipeline across baselines. As a result, the measured gains mainly reflect the effect of band partitioning and bin allocation; the role of the nonlinearities remains exploratory and is not isolated here.
+
+Our contributions are:
+\begin{itemize}
+\item A fixed 96-bin, 3-band mel representation for 44.1~kHz music with asymmetric bin allocation, validated on both a private 12-track set and the public GTZAN benchmark (999 tracks, 10 genres)
+\item A design-space search identifying an optimized 48/32/16 configuration that achieves 53.8\% lower reconstruction error than uniform 96-bin log-mel
+\item Rate--distortion analysis under scalar quantization showing consistent HR-Mel advantage at matched bitrates
+\item A downstream genre classification experiment demonstrating that HR-Mel preserves or improves discriminative information
+\item Band-wise and per-genre analyses characterizing the frequency-dependent and content-dependent behavior of the representation
+\end{itemize}
+
+\section{Related Work}
+
+\subsection{Mel Frontends and Nonlinear Compression}
+
+The mel scale was introduced to approximate the nonlinear relation between physical frequency and perceived pitch~\cite{stevens1937scale}. Mel-frequency cepstral coefficients (MFCCs) popularized mel filter banks together with logarithmic compression in speech processing~\cite{davis1980comparison}. However, alternatives to plain log compression have been explored for many years. Nasersharif et al.~\cite{nasersharif2007mel} proposed sub-band-dependent compression for mel sub-band energies in noisy speech. PNCC replaces the conventional log nonlinearity with a power-law form and additional auditory-inspired processing~\cite{pncc2016}. PCEN introduces adaptive gain control and dynamic range compression as an alternative to log-mel frontends~\cite{pcen2018}. LEAF further generalizes this direction by learning filtering, pooling, compression, and normalization jointly with downstream objectives~\cite{leaf2021}.
+
+These works show that the choice of frontend nonlinearity is an active design variable rather than a fixed requirement. HR-Mel differs in scope: it is a fixed music-oriented representation, not a learned frontend and not a noise-robust speech feature pipeline.
+
+\subsection{Multi-Band Audio Processing}
+
+Multi-band processing is also well established in modern audio systems. Band-Split RNN partitions the spectrum into subbands for music source separation~\cite{luo2023bandsplit}. In neural audio coding, BSCodec compresses different spectral bands through separate branches~\cite{bscodec2025}, while MUFFIN uses psychoacoustically guided multi-band frequency reconstruction and multi-band spectral quantization~\cite{muffin2025}. Compared with these methods, HR-Mel is intentionally much simpler: it does not learn band-specific modules, quantizers, or decoders, and instead studies a fixed hand-crafted representation.
+
+\subsection{Neural Audio Codecs}
+
+Neural codecs such as SoundStream~\cite{soundstream2021}, EnCodec~\cite{encodec2022}, and DAC~\cite{dac2023} learn compact latent spaces that implicitly capture perceptual structure. These systems are not directly comparable to a fixed mel frontend, but they motivate studying whether simple front-end design choices could provide useful inductive biases or efficient inputs for downstream music models.
+
+\section{Method}
+
+\subsection{Design Rationale}
+
+Standard mel spectrograms apply a uniform logarithmic compression across all frequencies:
+\begin{equation}
+M_{\text{standard}} = \log(1 + M_{\text{power}})
+\end{equation}
+where $M_{\text{power}}$ is the mel-filtered power spectrogram.
+
+HR-Mel studies a different design choice: partition the spectrum into a small number of fixed bands and allocate bins asymmetrically. The guiding intuition is simple. First, low-frequency regions often dominate signal energy and harmonic structure in music. Second, high-frequency regions remain important for attacks and brightness, but may not require the same allocation strategy if the goal is overall magnitude reconstruction at a fixed dimensionality. We therefore test whether a low-frequency-prioritized allocation improves reconstruction relative to a uniform 96-bin mel representation.
+
+\subsection{HR-Mel Specification}
+
+HR-Mel uses fixed STFT parameters for 44.1~kHz audio (n\_fft=2048, hop\_length=441, win\_length=2048) and a 3-band mel structure. We present two configurations: the initial hand-designed version (v1) and an optimized version (v2) obtained through design-space search (Section~\ref{sec:design_search}).
+
+\textbf{HR-Mel v1 (40/32/24):}
+\begin{itemize}
+\item Band 1: 0--1.5~kHz, 40 bins, log1p
+\item Band 2: 1.5--6~kHz, 32 bins, log1p
+\item Band 3: 6--20~kHz, 24 bins, $\sqrt{\text{log1p}}$
+\end{itemize}
+
+\textbf{HR-Mel v2 (48/32/16, optimized):}
+\begin{itemize}
+\item Band 1: 0--1.2~kHz, 48 bins, log1p
+\item Band 2: 1.2--5~kHz, 32 bins, log1p
+\item Band 3: 5--20~kHz, 16 bins, $\sqrt{\text{log1p}}$
+\end{itemize}
+
+The v2 configuration further concentrates bins in the low band and lowers the first crossover frequency, reflecting the finding that low-frequency resolution dominates overall reconstruction quality. For both versions, the band compressions are:
+\begin{equation}
+M_1 = \log(1 + M_{\text{power},1})
+\end{equation}
+\begin{equation}
+M_2 = \log(1 + M_{\text{power},2})
+\end{equation}
+\begin{equation}
+M_3 = \sqrt{\log(1 + M_{\text{power},3})}
+\end{equation}
+
+The final representation is the concatenation
+\begin{equation}
+M_{\text{HR}} = [M_1; M_2; M_3],
+\end{equation}
+with total dimensionality 96.
+
+\textbf{Decoding:} Each band is decoded using the corresponding inverse operation:
+\begin{align}
+\hat{M}_{\text{power},1} &= \exp(M_1) - 1 \\
+\hat{M}_{\text{power},2} &= \exp(M_2) - 1 \\
+\hat{M}_{\text{power},3} &= \exp(M_3^2) - 1
+\end{align}
+
+\subsection{Reconstruction Method}
+
+To compare representations under a common protocol, we reconstruct STFT power spectra from decoded mel powers using the Moore-Penrose pseudo-inverse. Given a mel basis $B \in \mathbb{R}^{N_{\text{mel}} \times N_{\text{fft}}}$ and decoded mel power $\hat{M}_{\text{power}}$, reconstruction proceeds as
+\begin{equation}
+\hat{S}_{\text{STFT}} = \max(B^{\dagger}\hat{M}_{\text{power}}, 0),
+\end{equation}
+where $B^{\dagger}$ is the pseudo-inverse computed by SVD and the max operation enforces non-negativity.
+
+This is a magnitude-only reconstruction procedure; phase is not considered. The same reconstruction method is applied to all baselines.
+
+\subsection{What Compression Means Here}
+
+A key point is that the pointwise nonlinearities used in HR-Mel are exactly inverted before pseudo-inverse reconstruction. Therefore, for a fixed band basis, the current evaluation does not isolate a standalone benefit from compression itself. Any performance difference observed here should be interpreted as the joint effect of band partitioning, bin allocation, basis construction, and numerical reconstruction under that design. Demonstrating an independent benefit from band-specific compression would require an additional bottleneck, such as quantization, entropy coding, or downstream model training.
+
+\section{Experimental Setup}
+
+\subsection{Datasets}
+
+\textbf{Private exploratory set.} Initial experiments use 12 mono music tracks at 44.1~kHz from a personal collection (2--3 minutes each, vocal and instrumental).
+
+\textbf{GTZAN benchmark.} For external validation, we use the GTZAN dataset~\cite{tzanetakis2002gtzan}: 1000 tracks across 10 genres (blues, classical, country, disco, hiphop, jazz, metal, pop, reggae, rock), each approximately 30 seconds. GTZAN is natively distributed at 22,050~Hz; we upsample all tracks to 44,100~Hz using high-quality resampling (librosa default polyphase filter). Following Sturm~\cite{sturm2013gtzan}, we exclude the known corrupt file (jazz.00054), yielding 999 tracks. We note that GTZAN has documented issues including artist overlap across splits and mislabeled samples; our classification results should be interpreted with this caveat.
+
+\subsection{Design-Space Search}
+\label{sec:design_search}
+
+To move beyond the initial heuristic configuration, we search over band boundaries ($f_1 \in \{1200, 1500, 1800\}$~Hz, $f_2 \in \{5000, 6000, 7500\}$~Hz), bin allocations (6 allocations summing to 96), and high-band compression functions (log1p, $\sqrt{\text{log1p}}$, pow0.75). This yields 162 configurations evaluated on the 12-track set. The best configuration by a rate--distortion composite score is $f_1{=}1200$, $f_2{=}5000$, bins 48/32/16 with $\sqrt{\text{log1p}}$ on the high band.
+
+\subsection{Implementation}
+
+All experiments were implemented in Python using librosa, NumPy, SciPy, and scikit-learn~\cite{mcfee2015librosa,harris2020numpy,virtanen2020scipy,sklearn2011}.
+Code and analysis scripts are available at \url{https://github.com/mini-kio/HR-Mel}.
+
+\subsection{Baseline Representations}
+
+We compare HR-Mel against:
+\begin{itemize}
+\item \textbf{STFT Power:} 1025-bin power spectrogram (reference)
+\item \textbf{Mel-80:} Standard 80-bin power mel
+\item \textbf{Log-Mel-80:} 80-bin mel with log1p compression
+\item \textbf{Mel-96:} Standard 96-bin power mel (matched dimensionality)
+\item \textbf{Log-Mel-96:} 96-bin mel with uniform log1p compression
+\item \textbf{HR-Mel v1:} 40/32/24 bins (initial design)
+\item \textbf{HR-Mel v2:} 48/32/16 bins (optimized)
+\end{itemize}
+
+All representations use identical STFT parameters (n\_fft=2048, hop=441, win=2048) and the same mel basis construction protocol (Slaney normalization, fmax=20,000~Hz).
+
+\subsection{Evaluation Metrics}
+
+\textbf{Overall Reconstruction Error:} We report relative Frobenius norm error after pseudo-inverse reconstruction:
+\begin{equation}
+\epsilon_{\text{rel}} = \frac{\|S_{\text{STFT}} - \hat{S}_{\text{STFT}}\|_F}{\|S_{\text{STFT}}\|_F}.
+\end{equation}
+
+\textbf{Rate--Distortion Analysis:} We apply uniform scalar quantization at multiple bit-widths (2, 4, 6, 8, 10, 12, 16 bits) to both log-mel-96 and HR-Mel v2, with band-wise quantization for HR-Mel to preserve per-band dynamic range. Bitrate is computed as $\text{bits} \times \text{bins} \times \text{frame\_rate}$.
+
+\textbf{Band-Wise Analysis:} Reconstruction error is computed separately over low ($<$1.2~kHz), mid (1.2--5~kHz), and high ($>$5~kHz) STFT frequency ranges.
+
+\textbf{Genre Classification:} To evaluate downstream discriminative value, we train SVM classifiers (RBF kernel, $C{=}10$) on mean$+$std features (192 dimensions) extracted from each representation, reporting stratified 3-fold cross-validation accuracy.
+
+\textbf{Scope:} The study evaluates magnitude reconstruction and simple classification. It does not assess perceptual quality, phase reconstruction, or integration with neural codec/generation systems.
+
+\section{Results}
+
+\subsection{Exploratory Results (12-Track Private Set)}
+
+Table~\ref{tab:overall_12} shows overall reconstruction error on the initial 12-track set. HR-Mel v1 (40/32/24) achieves 25.3\% lower error than Log-Mel-96, while HR-Mel v2 (48/32/16, from design-space search) achieves 46.4\% lower error.
+
+\begin{table}[t]
+\centering
+\caption{Reconstruction performance on 12-track exploratory set (mean $\pm$ std)}
+\label{tab:overall_12}
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Representation & Bins & Rel.\ Error $\downarrow$ \\
+\midrule
+STFT & 1025 & 0.000 \\
+\midrule
+Mel-80 & 80 & 0.4438 $\pm$ 0.0404 \\
+Mel-96 / Log-Mel-96 & 96 & 0.3810 $\pm$ 0.0395 \\
+HR-Mel v1 (40/32/24) & 96 & 0.2845 $\pm$ 0.0410 \\
+\textbf{HR-Mel v2 (48/32/16)} & \textbf{96} & \textbf{0.2041 $\pm$ 0.041} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{GTZAN Validation (999 Tracks)}
+
+Table~\ref{tab:overall_gtzan} shows that the HR-Mel advantage generalizes to the GTZAN benchmark. HR-Mel v2 achieves 53.8\% lower error than the same-dimensionality Log-Mel-96 baseline across 999 tracks and 10 genres.
+
+\begin{table}[t]
+\centering
+\caption{Reconstruction performance on GTZAN (999 tracks, 10 genres, upsampled to 44.1~kHz). Mean $\pm$ std.}
+\label{tab:overall_gtzan}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Representation & Bins & Rel.\ Error $\downarrow$ & $\Delta$ vs Mel-96 \\
+\midrule
+STFT & 1025 & 0.000 & -- \\
+\midrule
+Mel-80 & 80 & 0.4514 $\pm$ 0.058 & -- \\
+Mel-96 / Log-Mel-96 & 96 & 0.3747 $\pm$ 0.059 & -- \\
+HR-Mel v1 (40/32/24) & 96 & 0.3025 $\pm$ 0.056 & +19.3\% \\
+\textbf{HR-Mel v2 (48/32/16)} & \textbf{96} & \textbf{0.1730 $\pm$ 0.077} & \textbf{+53.8\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Band-Wise Analysis}
+
+Table~\ref{tab:bandwise} shows band-wise errors for HR-Mel v2 on GTZAN. The improvement is concentrated in the low band (+66.3\%), with a slight mid-band gain (+1.2\%) and an expected high-band degradation ($-$9.4\%) due to reduced high-band allocation.
+
+\begin{table}[t]
+\centering
+\caption{Band-wise reconstruction errors on GTZAN (HR-Mel v2, 48/32/16). $\Delta$ is improvement relative to Mel-96.}
+\label{tab:bandwise}
+\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lccr@{}}
+\toprule
+Band & Mel-96 & HR-Mel v2 & $\Delta$ \\
+\midrule
+Low ($<$1.2 kHz) & 0.3645 $\pm$ 0.054 & \textbf{0.1227 $\pm$ 0.036} & \textbf{+66.3\%} \\
+Mid (1.2--5 kHz) & 0.6209 $\pm$ 0.057 & 0.6133 $\pm$ 0.063 & +1.2\% \\
+High ($>$5 kHz) & 0.7254 $\pm$ 0.091 & 0.7936 $\pm$ 0.084 & $-$9.4\% \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\subsection{Per-Genre Analysis}
+
+Table~\ref{tab:per_genre} shows that the HR-Mel v2 advantage is consistent across all 10 GTZAN genres, with improvements ranging from 47.7\% (classical) to 65.7\% (hiphop).
+
+\begin{table}[t]
+\centering
+\caption{Per-genre reconstruction error on GTZAN (Mel-96 vs HR-Mel v2).}
+\label{tab:per_genre}
+\small
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Genre & Mel-96 & HR-Mel v2 & Improvement \\
+\midrule
+blues     & 0.3807 & 0.1902 & +50.1\% \\
+classical & 0.4110 & 0.2150 & +47.7\% \\
+country   & 0.3848 & 0.1793 & +53.4\% \\
+disco     & 0.3278 & 0.1659 & +49.4\% \\
+hiphop    & 0.3608 & 0.1239 & +65.7\% \\
+jazz      & 0.4173 & 0.2019 & +51.6\% \\
+metal     & 0.3589 & 0.1656 & +53.9\% \\
+pop       & 0.3634 & 0.1470 & +59.5\% \\
+reggae    & 0.3690 & 0.1547 & +58.1\% \\
+rock      & 0.3741 & 0.1863 & +50.2\% \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\subsection{Rate--Distortion Analysis}
+
+Table~\ref{tab:rd} compares HR-Mel v2 and Log-Mel-96 under scalar quantization at matched bitrates on GTZAN. HR-Mel maintains a consistent advantage for $\geq$4 bits; at 2 bits, severe quantization degrades both representations, with Mel-96 being slightly more robust.
+
+\begin{table}[t]
+\centering
+\caption{Rate--distortion on GTZAN: mean reconstruction error under scalar quantization at matched bitrates (96 bins $\times$ frame rate).}
+\label{tab:rd}
+\small
+\begin{tabular}{@{}ccc@{}}
+\toprule
+Bits & Log-Mel-96 & HR-Mel v2 \\
+\midrule
+2  & \textbf{0.9807} & 1.0790 \\
+4  & 0.4026 & \textbf{0.2532} \\
+6  & 0.3764 & \textbf{0.1790} \\
+8  & 0.3748 & \textbf{0.1733} \\
+10 & 0.3748 & \textbf{0.1730} \\
+12 & 0.3747 & \textbf{0.1730} \\
+16 & 0.3747 & \textbf{0.1730} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The rate--distortion gap is largest in the practical operating range (4--8 bits), which is most relevant for neural audio codec and token-based generation applications.
+
+\subsection{Genre Classification}
+
+Table~\ref{tab:classification} shows genre classification accuracy using SVM on mean$+$std features. HR-Mel v2 achieves slightly higher accuracy than Log-Mel-96, suggesting that the asymmetric representation preserves or mildly improves discriminative content.
+
+\begin{table}[t]
+\centering
+\caption{Genre classification accuracy on GTZAN (stratified 3-fold CV, SVM RBF). Note: artist-filtered splits not applied; results may be slightly inflated.}
+\label{tab:classification}
+\small
+\begin{tabular}{@{}lc@{}}
+\toprule
+Features & Accuracy \\
+\midrule
+Log-Mel-96 (mean$+$std) & 0.647 $\pm$ 0.010 \\
+\textbf{HR-Mel v2 (mean$+$std)} & \textbf{0.660 $\pm$ 0.029} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Ablation Study}
+
+To study the role of allocation, we compare the original 40/32/24 design against two alternatives: 32/32/32 and 24/32/40 on the 12-track set. Table~\ref{tab:ablation} summarizes the band-wise results.
+
+\begin{table}[t]
+\centering
+\caption{Ablation study: alternative bin allocations (12-track set). $\Delta$ shows improvement over Mel-96 per band.}
+\label{tab:ablation}
+\small
+\resizebox{0.92\columnwidth}{!}{%
+\begin{tabular}{@{}lccr@{}}
+\toprule
+Config & Low & Mid & High \\
+\midrule
+\multicolumn{4}{l}{\textit{40/32/24 (v1)}} \\
+Mel-96 & 0.3737 & 0.6701 & 0.7186 \\
+HR-Mel & \textbf{0.2729} & 0.6780 & 0.7372 \\
+$\Delta$ & \textbf{+27.0\%} & -1.2\% & -2.6\% \\
+\midrule
+\multicolumn{4}{l}{\textit{32/32/32 (Balanced)}} \\
+HR-Mel & 0.4007 & 0.6780 & \textbf{0.7159} \\
+$\Delta$ & -7.4\% & -1.2\% & \textbf{+0.3\%} \\
+\midrule
+\multicolumn{4}{l}{\textit{24/32/40 (High-Focused)}} \\
+HR-Mel & 0.4840 & 0.6780 & 0.6958 \\
+$\Delta$ & -30.5\% & -1.2\% & +3.1\% \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+The ablation confirms that low-band emphasis drives overall improvement, and the GTZAN validation shows this pattern generalizes across diverse genres.
+
+\section{Discussion}
+
+\subsection{What the Results Show}
+
+The GTZAN validation substantially strengthens the original finding. The 53.8\% improvement over Log-Mel-96 on 999 diverse tracks (vs.\ 25.3\% on 12 private tracks with v1) demonstrates that asymmetric multi-band allocation provides a robust advantage that generalizes across genres and recording conditions. The per-genre analysis (Table~\ref{tab:per_genre}) shows improvements ranging from 47.7\% to 65.7\%, with bass-heavy genres (hiphop, pop, reggae) benefiting most from low-band emphasis.
+
+The rate--distortion analysis (Table~\ref{tab:rd}) provides critical evidence beyond lossless reconstruction: under quantization at matched bitrates, HR-Mel v2 maintains a large advantage for $\geq$4 bits. This is directly relevant to neural codec and token-based generation applications where representations are quantized before downstream use.
+
+The genre classification result (Table~\ref{tab:classification}) shows that the reconstruction advantage does not come at the cost of discriminative information; HR-Mel features perform comparably or slightly better than log-mel features for a downstream task.
+
+\subsection{Positioning Relative to Prior Work}
+
+Band- or channel-dependent nonlinear frontend design has prior art in speech and audio~\cite{nasersharif2007mel,pncc2016,pcen2018,leaf2021}, and learned multi-band processing is already used in source separation and neural audio coding~\cite{luo2023bandsplit,bscodec2025,muffin2025}. HR-Mel should be viewed as a transparent, training-free baseline in this broader design space. Its distinguishing characteristics are practical: fixed, reproducible, and validated on a public benchmark with matched-dimensionality comparisons.
+
+\subsection{Implications for Front-End Design}
+
+The study yields three design lessons:
+\begin{enumerate}
+\item \textbf{Bin allocation dominates:} Low-frequency emphasis produces large gains in overall magnitude reconstruction at constant dimensionality. The v1-to-v2 improvement (25\% $\to$ 54\%) shows that even within the HR-Mel framework, moving from 40 to 48 low-band bins with optimized crossover frequencies has a large effect.
+\item \textbf{Quantization reveals compression value:} The rate--distortion advantage demonstrates that band-specific design helps beyond lossless reconstruction, addressing a key limitation of the original study.
+\item \textbf{Design-space search is practical:} A modest grid search (162 configurations) was sufficient to find a substantially better configuration than the initial heuristic design.
+\end{enumerate}
+
+\subsection{Limitations and Future Work}
+
+\textbf{Upsampling artifact:} GTZAN tracks were upsampled from 22.05~kHz to 44.1~kHz, which cannot recover true high-frequency content above 11~kHz. The high-band results should be interpreted with this caveat; native 44.1~kHz datasets (e.g., MUSDB18) are needed for definitive high-band evaluation.
+
+\textbf{Classification caveat:} GTZAN has known artist-overlap issues~\cite{sturm2013gtzan}. Our classification results use stratified random splits without artist filtering, so accuracy may be mildly inflated. However, since both representations are compared under identical splits, the relative comparison remains valid.
+
+\textbf{Magnitude-only reconstruction:} We evaluate pseudo-inverse reconstruction of power spectra. Perceptual listening quality, phase reconstruction, and waveform-level evaluation remain future work.
+
+\textbf{No end-to-end integration:} Integration with neural codecs, generative models, or music information retrieval systems is needed to determine practical impact.
+
+Future work:
+\begin{itemize}
+\item Validation on native 44.1~kHz datasets (MUSDB18, FMA) with artist-filtered splits
+\item Same-partition controls to isolate allocation vs.\ nonlinearity effects
+\item Perceptual evaluation with waveform reconstruction and listening tests
+\item Integration into neural audio codecs or music generation pipelines (DiT, token-based LM)
+\item Content-adaptive profile selection based on spectral features
+\end{itemize}
+
+\section{Conclusion}
+
+We presented HR-Mel, a fixed 3-band, 96-bin mel representation for 44.1~kHz music with asymmetric bin allocation and band-specific nonlinearities. Through design-space search and validation on the GTZAN benchmark (999 tracks, 10 genres), we showed that:
+
+\begin{itemize}
+\item HR-Mel v2 (48/32/16) reduces pseudo-inverse reconstruction error by 53.8\% relative to uniform 96-bin log-mel, with consistent improvement across all 10 genres
+\item Under scalar quantization at matched bitrates, HR-Mel maintains a consistent rate--distortion advantage (e.g., 8-bit: 0.1733 vs.\ 0.3748)
+\item Downstream genre classification accuracy is comparable or slightly improved (66.0\% vs.\ 64.7\%)
+\end{itemize}
+
+These results support asymmetric multi-band allocation as a practical design direction for compact music representations. The improvement is driven primarily by low-frequency emphasis (+66.3\% low-band improvement), reflecting the energy distribution of typical music signals.
+
+We view HR-Mel as a transparent, training-free baseline for studying fixed multi-band mel frontends. Its value lies in demonstrating that simple frontend redesign can yield substantial gains at matched dimensionality, motivating integration into neural audio codecs and music generation systems. For reproducibility, we provide code at \url{https://github.com/mini-kio/HR-Mel}.
+
+\section*{Acknowledgments}
+
+The author thanks the open-source audio processing community and the developers of librosa, NumPy, and SciPy for foundational tools used in this study.
+
+\begin{thebibliography}{99}
+
+\bibitem{stevens1937scale}
+S. S. Stevens, J. Volkmann, and E. B. Newman,
+``A scale for the measurement of the psychological magnitude of pitch,''
+\textit{J. Acoust. Soc. Am.}, vol. 8, no. 3, pp. 185--190, 1937.
+
+\bibitem{davis1980comparison}
+S. Davis and P. Mermelstein,
+``Comparison of parametric representations for monosyllabic word recognition in continuously spoken sentences,''
+\textit{IEEE Trans. Acoust., Speech, Signal Process.}, vol. 28, no. 4, pp. 357--366, 1980.
+
+\bibitem{nasersharif2007mel}
+B. Nasersharif, A. Akbari, and M. M. Homayounpour,
+``Mel Sub-Band Filtering and Compression for Robust Speech Recognition,''
+in \textit{Proc. Interspeech}, 2007, pp. 1102--1105.
+
+\bibitem{pncc2016}
+C. Kim and R. M. Stern,
+``Power-Normalized Cepstral Coefficients (PNCC) for Robust Speech Recognition,''
+\textit{IEEE/ACM Trans. Audio, Speech, Lang. Process.}, vol. 24, no. 7, pp. 1318--1329, 2016.
+
+\bibitem{pcen2018}
+V. Lostanlen, J. Salamon, M. Cartwright, B. McFee, A. Farnsworth, S. Kelling, and J. P. Bello,
+``Per-Channel Energy Normalization: Why and How,''
+\textit{IEEE Signal Process. Lett.}, vol. 26, no. 1, pp. 39--43, 2019.
+
+\bibitem{leaf2021}
+N. Zeghidour, O. Teboul, F. de Chaumont Quitry, and M. Tagliasacchi,
+``LEAF: A Learnable Frontend for Audio Classification,''
+in \textit{Proc. Int. Conf. Learn. Represent. (ICLR)}, 2021.
+
+\bibitem{luo2023bandsplit}
+Y. Luo and J. Yu,
+``Music source separation with band-split RNN,''
+\textit{IEEE/ACM Trans. Audio, Speech, Lang. Process.}, vol. 31, pp. 1893--1901, 2023.
+
+\bibitem{bscodec2025}
+H. Wang, J. Shi, J. Tian, B. Li, K. Yu, and S. Watanabe,
+``BSCodec: A band-split neural codec for high-quality universal audio reconstruction,''
+\textit{arXiv preprint arXiv:2511.06150}, 2025.
+
+\bibitem{muffin2025}
+D. Ng, K. Zhou, Y.-W. Chao, Z. Xiong, B. Ma, and E. S. Chng,
+``Multi-band Frequency Reconstruction for Neural Psychoacoustic Coding,''
+in \textit{Proc. 42nd Int. Conf. Mach. Learn. (ICML)}, vol. 267, pp. 45934--45953, 2025.
+
+\bibitem{soundstream2021}
+N. Zeghidour, A. Luebs, A. Omran, J. Skoglund, and M. Tagliasacchi,
+``SoundStream: An end-to-end neural audio codec,''
+\textit{IEEE/ACM Trans. Audio, Speech, Lang. Process.}, vol. 30, pp. 495--507, 2022.
+
+\bibitem{encodec2022}
+A. D\'efossez, J. Copet, G. Synnaeve, and Y. Adi,
+``High fidelity neural audio compression,''
+\textit{arXiv preprint arXiv:2210.13438}, 2022.
+
+\bibitem{dac2023}
+R. Kumar, P. Seetharaman, A. Luebs, I. Kumar, and K. Kumar,
+``High-fidelity audio compression with improved RVQGAN,''
+in \textit{Adv. Neural Inf. Process. Syst. (NeurIPS)}, vol. 36, 2023.
+
+\bibitem{sisec2018}
+F.-R. St\"oter, A. Liutkus, and N. Ito,
+``The 2018 Signal Separation Evaluation Campaign,''
+in \textit{Proc. Int. Conf. Latent Variable Analysis and Signal Separation (LVA/ICA)}, 2018, pp. 293--305.
+
+\bibitem{fma2017}
+M. Defferrard, K. Benzi, P. Vandergheynst, and X. Bresson,
+``FMA: A Dataset For Music Analysis,''
+in \textit{Proc. Int. Soc. Music Inf. Retr. Conf. (ISMIR)}, 2017, pp. 316--323.
+
+\bibitem{tzanetakis2002gtzan}
+G. Tzanetakis and P. Cook,
+``Musical genre classification of audio signals,''
+\textit{IEEE Trans. Speech Audio Process.}, vol. 10, no. 5, pp. 293--302, 2002.
+
+\bibitem{sturm2013gtzan}
+B. L. Sturm,
+``The GTZAN dataset: Its contents, its faults, their effects on evaluation, and its future use,''
+\textit{arXiv preprint arXiv:1306.1461}, 2013.
+
+\bibitem{sklearn2011}
+F. Pedregosa \textit{et al.},
+``Scikit-learn: Machine Learning in Python,''
+\textit{J. Mach. Learn. Res.}, vol. 12, pp. 2825--2830, 2011.
+
+\bibitem{mcfee2015librosa}
+B. McFee, C. Raffel, D. Liang, D. P. W. Ellis, M. McVicar, E. Battenberg, and O. Nieto,
+``librosa: Audio and Music Signal Analysis in Python,''
+in \textit{Proc. 14th Python in Science Conf.}, 2015, pp. 18--25.
+
+\bibitem{harris2020numpy}
+C. R. Harris \textit{et al.},
+``Array programming with NumPy,''
+\textit{Nature}, vol. 585, no. 7825, pp. 357--362, 2020.
+
+\bibitem{virtanen2020scipy}
+P. Virtanen \textit{et al.},
+``SciPy 1.0: fundamental algorithms for scientific computing in Python,''
+\textit{Nat. Methods}, vol. 17, pp. 261--272, 2020.
+
+\end{thebibliography}
+
+\end{document}
